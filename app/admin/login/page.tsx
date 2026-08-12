@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { KeyRound } from 'lucide-react';
 import { LoginForm } from '@/components/admin/login-form';
-import { isAdminConfigured, isUsingDevCredentials } from '@/lib/auth/session';
+import { getAdminConfigGap, isUsingDevCredentials } from '@/lib/auth/session';
 
 export const metadata: Metadata = {
   title: 'Admin sign-in',
@@ -25,7 +25,7 @@ export default async function AdminLoginPage({
   // Only same-origin admin paths are accepted, so this cannot become an open redirect.
   const safeFrom = from && from.startsWith('/admin') ? from : '/admin';
 
-  const configured = isAdminConfigured();
+  const configGap = getAdminConfigGap();
   const devMode = isUsingDevCredentials();
 
   return (
@@ -70,14 +70,35 @@ export default async function AdminLoginPage({
           </div>
         )}
 
-        {!configured && !devMode && (
+        {configGap && !devMode && (
           <div className="mt-6 rounded-sm border border-destructive/25 bg-destructive-soft p-4 text-xs leading-relaxed text-destructive">
-            <p className="mb-1 font-medium">Admin access is not configured</p>
-            <p>
-              Set <code className="font-mono">ADMIN_EMAIL</code>,{' '}
-              <code className="font-mono">ADMIN_PASSWORD_HASH</code> and{' '}
-              <code className="font-mono">AUTH_SECRET</code> in this environment. Until then no
-              sign-in will succeed.
+            {configGap === 'credentials' ? (
+              <>
+                <p className="mb-1 font-medium">Admin access is not configured</p>
+                <p>
+                  Set <code className="font-mono">ADMIN_EMAIL</code>,{' '}
+                  <code className="font-mono">ADMIN_PASSWORD_HASH</code> and{' '}
+                  <code className="font-mono">AUTH_SECRET</code> in this environment, then
+                  redeploy. Until then no sign-in will succeed.
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="mb-1 font-medium">Session secret is missing</p>
+                <p>
+                  Credentials are configured, but{' '}
+                  <code className="font-mono">AUTH_SECRET</code> is absent or shorter than 32
+                  characters, so no session can be issued. Set it in this environment, then
+                  redeploy.
+                </p>
+              </>
+            )}
+            <p className="mt-2 opacity-80">
+              Generate both with{' '}
+              <code className="font-mono">
+                node scripts/hash-password.mjs &apos;your-password&apos;
+              </code>
+              .
             </p>
           </div>
         )}

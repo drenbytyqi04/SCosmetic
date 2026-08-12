@@ -34,6 +34,19 @@ export type ActionResult<T = undefined> =
  * Authentication
  * ------------------------------------------------------------------ */
 
+/**
+ * Failure messages. Configuration problems name the missing variable, because the
+ * person hitting them is the operator. A wrong credential stays deliberately vague and
+ * never reveals which half was wrong.
+ */
+const LOGIN_FAILURE_MESSAGE = {
+  invalid_credentials: 'Those credentials are not correct.',
+  not_configured:
+    'Admin access is not configured on this deployment. Set ADMIN_EMAIL and ADMIN_PASSWORD_HASH, then redeploy.',
+  missing_session_secret:
+    'AUTH_SECRET is missing or shorter than 32 characters, so no session can be issued. Set it in this environment, then redeploy.',
+} as const;
+
 export interface LoginState {
   error?: string;
   fieldErrors?: FieldErrors;
@@ -74,11 +87,7 @@ export async function loginAction(_prev: LoginState, formData: FormData): Promis
 
   if (!result.ok) {
     return {
-      error:
-        result.reason === 'not_configured'
-          ? 'Admin access is not configured on this deployment. Set ADMIN_EMAIL and ADMIN_PASSWORD_HASH.'
-          : // Deliberately generic: never reveal which half was wrong.
-            'Those credentials are not correct.',
+      error: LOGIN_FAILURE_MESSAGE[result.reason],
       email: submittedEmail,
     };
   }

@@ -4,6 +4,7 @@ import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { safeEqual, verifyPassword } from '@/lib/auth/password';
 import {
+  isSessionSecretConfigured,
   SESSION_COOKIE,
   SESSION_MAX_AGE_SECONDS,
   signSessionToken,
@@ -24,18 +25,36 @@ const DEV_PASSWORD = 'cosmetics-dev-2026';
 
 export type LoginResult =
   | { ok: true }
-  | { ok: false; reason: 'invalid_credentials' | 'not_configured' };
+  | { ok: false; reason: 'invalid_credentials' | 'not_configured' | 'missing_session_secret' };
 
 /**
  * True when the deployment has real admin credentials configured. The login page
  * reads this to explain itself rather than silently rejecting every attempt.
  */
 export function isAdminConfigured(): boolean {
-  return Boolean(process.env.ADMIN_EMAIL && process.env.ADMIN_PASSWORD_HASH);
+  return (
+    Boolean(process.env.ADMIN_EMAIL && process.env.ADMIN_PASSWORD_HASH) &&
+    isSessionSecretConfigured()
+  );
+}
+
+/**
+ * Which piece of configuration is missing, for the login page's explanation.
+ * Returns null when everything needed is present.
+ */
+export function getAdminConfigGap(): 'credentials' | 'session_secret' | null {
+  if (!process.env.ADMIN_EMAIL || !process.env.ADMIN_PASSWORD_HASH) {
+    return process.env.NODE_ENV === 'production' ? 'credentials' : null;
+  }
+  if (!isSessionSecretConfigured()) return 'session_secret';
+  return null;
 }
 
 export function isUsingDevCredentials(): boolean {
-  return !isAdminConfigured() && process.env.NODE_ENV !== 'production';
+  return (
+    !(process.env.ADMIN_EMAIL && process.env.ADMIN_PASSWORD_HASH) &&
+    process.env.NODE_ENV !== 'production'
+  );
 }
 
 /**
@@ -49,6 +68,13 @@ export async function verifyAdminCredentials(
   email: string,
   password: string,
 ): Promise<LoginResult> {
+  // No signing secret means no session can be issued, so there is nothing a correct
+  // password could achieve. Reporting that up front beats throwing mid-sign-in.
+  if (!isSessionSecretConfigured()) {
+    console.error('[auth] Admin login attempted but AUTH_SECRET is missing or too short.');
+    return { ok: false, reason: 'missing_session_secret' };
+  }
+
   const configuredEmail = process.env.ADMIN_EMAIL;
   const configuredHash = process.env.ADMIN_PASSWORD_HASH;
 

@@ -39,6 +39,21 @@ function getSecret(): Uint8Array {
   return new TextEncoder().encode(secret);
 }
 
+/**
+ * Whether a session can actually be signed.
+ *
+ * Checked *before* attempting a sign-in so a deployment that set credentials but
+ * forgot AUTH_SECRET reports the real cause, instead of throwing out of the login
+ * action and rendering an opaque "a server error occurred". Deployment state, not a
+ * secret — the login page already discloses when admin access is unconfigured.
+ */
+export function isSessionSecretConfigured(): boolean {
+  const secret = process.env.AUTH_SECRET;
+  if (secret && secret.length >= 32) return true;
+  // Development falls back to a fixed secret, so signing still works there.
+  return process.env.NODE_ENV !== 'production';
+}
+
 export async function signSessionToken(session: AdminSession): Promise<string> {
   return new SignJWT({ email: session.email, role: session.role })
     .setProtectedHeader({ alg: 'HS256' })
