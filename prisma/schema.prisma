@@ -1,0 +1,283 @@
+// COSMETICS.KS — database schema.
+//
+// This file is the target shape for the data layer, written to match the domain
+// types in `types/index.ts` field for field. It is intentionally checked in
+// before the Prisma client is wired up, so the in-memory repositories in
+// `lib/*/repository.ts` can be replaced one at a time against a schema that
+// already exists.
+//
+// To adopt it:
+//   1. npm install prisma @prisma/client
+//   2. Set DATABASE_URL and DIRECT_URL (see .env.example)
+//   3. npx prisma migrate dev --name init
+//   4. Implement the Prisma repositories and return them from the factories
+//      in lib/products/repository.ts, lib/orders/repository.ts and
+//      lib/marketing/repository.ts
+//   5. Set DATA_SOURCE=prisma
+//
+// See DATABASE.md for the full walkthrough.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  // Pooled connections cannot run migrations; DIRECT_URL bypasses the pooler.
+  directUrl = env("DIRECT_URL")
+}
+
+enum CategorySlug {
+  lips
+  complexion
+  skincare
+  eyes
+  fragrance
+  tools
+  body
+}
+
+enum OrderStatus {
+  pending
+  paid
+  fulfilled
+  cancelled
+  refunded
+}
+
+enum PaymentStatus {
+  requires_payment
+  processing
+  succeeded
+  failed
+}
+
+enum ShippingMethod {
+  standard
+  express
+}
+
+enum CouponType {
+  percentage
+  fixed
+  free_shipping
+}
+
+enum NewsletterSource {
+  footer
+  homepage
+  checkout
+}
+
+model Category {
+  id          String       @id @default(cuid())
+  slug        CategorySlug @unique
+  name        String
+  tagline     String
+  description String
+  image       String
+  position    Int
+
+  products Product[]
+
+  @@index([position])
+}
+
+model Product {
+  id          String       @id @default(cuid())
+  slug        String       @unique
+  name        String
+  brand       String
+  categorySlug CategorySlug
+  tagline     String
+  description String       @db.Text
+  /// Ordered paragraphs of long-form copy.
+  details     String[]
+  howToUse    String?      @db.Text
+
+  /// All money is stored in minor units (cents) to avoid float drift.
+  price     Int
+  salePrice Int?
+
+  images      String[]
+  ingredients String[]
+  benefits    String[]
+
+  rating      Float?
+  reviewCount Int?    @default(0)
+
+  stock Int    @default(0)
+  size  String?
+
+  featured   Boolean @default(false)
+  bestseller Boolean @default(false)
+  newArrival Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  category   Category    @relation(fields: [categorySlug], references: [slug])
+  shades     Shade[]
+  orderLines OrderLine[]
+
+  // Indexes chosen for the queries the storefront actually runs: category
+  // listings, the merchandising rails and the price sort.
+  @@index([categorySlug])
+  @@index([brand])
+  @@index([featured])
+  @@index([bestseller])
+  @@index([newArrival])
+  @@index([price])
+  @@index([createdAt])
+}
+
+model Shade {
+  id        String @id @default(cuid())
+  /// Stable, human-readable key used in cart line items, e.g. "rosewater".
+  key       String
+  name      String
+  hex       String
+  position  Int    @default(0)
+  productId String
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, key])
+  @@index([productId])
+}
+
+model Coupon {
+  code        String     @id
+  type        CouponType
+  /// Percent (1–100) for `percentage`, cents for `fixed`, unused otherwise.
+  value       Int
+  description String
+  minSubtotal Int?
+  expiresAt   DateTime?
+  active      Boolean    @default(true)
+  createdAt   DateTime   @default(now())
+
+  orders Order[]
+
+  @@index([active])
+}
+
+model Customer {
+  id         String    @id @default(cuid())
+  email      String    @unique
+  fullName   String
+  city       String?
+  createdAt  DateTime  @default(now())
+  lastOrderAt DateTime?
+
+  orders Order[]
+
+  @@index([email])
+}
+
+model Order {
+  id        String @id @default(cuid())
+  /// Customer-facing reference, e.g. KS-8F31A2.
+  reference String @unique
+
+  email String
+  phone String?
+
+  status        OrderStatus    @default(pending)
+  paymentStatus PaymentStatus  @default(requires_payment)
+  /// Provider reference (e.g. a Stripe PaymentIntent id).
+  paymentIntentId String?      @unique
+
+  shippingMethod ShippingMethod @default(standard)
+
+  // Address is denormalised onto the order on purpose: an order is a historical
+  // record and must not change when a customer later edits their address.
+  shippingName       String
+  shippingLine1      String
+  shippingLine2      String?
+  shippingCity       String
+  shippingPostalCode String
+  shippingCountry    String
+
+  // Totals are stored, not recomputed. Prices and tax rates change; what was
+  // charged does not.
+  subtotal Int
+  discount Int @default(0)
+  shipping Int @default(0)
+  tax      Int @default(0)
+  total    Int
+
+  notes String? @db.Text
+
+  couponCode String?
+  customerId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  lines    OrderLine[]
+  coupon   Coupon?     @relation(fields: [couponCode], references: [code])
+  customer Customer?   @relation(fields: [customerId], references: [id])
+
+  @@index([email])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model OrderLine {
+  id        String @id @default(cuid())
+  orderId   String
+  productId String?
+
+  // Product details are copied onto the line so the order still reads correctly
+  // after a product is renamed, repriced or deleted.
+  slug      String
+  name      String
+  shadeName String?
+  unitPrice Int
+  quantity  Int
+  image     String
+
+  order   Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  @@index([orderId])
+  @@index([productId])
+}
+
+model NewsletterSubscriber {
+  id        String           @id @default(cuid())
+  email     String           @unique
+  source    NewsletterSource @default(footer)
+  confirmed Boolean          @default(false)
+  /// Single-use token for double opt-in confirmation.
+  confirmToken String?       @unique
+  createdAt DateTime         @default(now())
+
+  @@index([confirmed])
+}
+
+model ContactMessage {
+  id        String   @id @default(cuid())
+  name      String
+  email     String
+  subject   String
+  message   String   @db.Text
+  handled   Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([handled])
+  @@index([createdAt])
+}
+
+/// Admin accounts. Passwords are scrypt hashes in the format produced by
+/// `scripts/hash-password.mjs` — never plaintext, and never reversible.
+model AdminUser {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  passwordHash String
+  name         String?
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+}

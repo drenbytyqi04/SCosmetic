@@ -1,0 +1,255 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+
+/*
+ * COSMETICS.KS design tokens.
+ *
+ * One committed light palette — cream grounds, nude and sand mid-tones, espresso
+ * text and a restrained champagne accent. Blush appears as a whisper, never as the
+ * dominant note. Every colour is defined here; components reference semantic names
+ * (`bg-surface`, `text-muted-foreground`) rather than raw values, so a palette
+ * revision is a change to this block alone.
+ */
+@theme {
+  /* ---- Brand ramp ---- */
+  --color-cream-50: #fdfbf8;
+  --color-cream-100: #fbf7f2;
+  --color-cream-200: #f6efe6;
+  --color-sand-100: #f2e9dd;
+  --color-sand-200: #e9dccb;
+  --color-sand-300: #dccbb4;
+  --color-nude-200: #e6d5c3;
+  --color-nude-300: #d6bda4;
+  --color-nude-400: #c2a68a;
+  --color-blush-100: #f6e9e5;
+  --color-blush-200: #eed6d0;
+  --color-blush-300: #ddb3ab;
+  --color-champagne-300: #d8c3a0;
+  --color-champagne-400: #c3a678;
+  --color-champagne-500: #a98a5c;
+  --color-espresso-500: #6b5a4e;
+  --color-espresso-700: #43352c;
+  --color-espresso-900: #2b211c;
+  --color-ink: #1c1512;
+
+  /* ---- Semantic roles ---- */
+  --color-background: var(--color-cream-100);
+  --color-foreground: var(--color-espresso-900);
+  --color-surface: #ffffff;
+  --color-surface-muted: var(--color-cream-200);
+  --color-surface-accent: var(--color-sand-100);
+
+  --color-muted: var(--color-sand-100);
+  --color-muted-foreground: var(--color-espresso-500);
+
+  --color-primary: var(--color-espresso-900);
+  --color-primary-foreground: var(--color-cream-50);
+
+  --color-secondary: var(--color-sand-200);
+  --color-secondary-foreground: var(--color-espresso-900);
+
+  --color-accent: var(--color-champagne-400);
+  --color-accent-foreground: var(--color-ink);
+  --color-accent-soft: var(--color-champagne-300);
+
+  --color-border: #e7dbcc;
+  --color-border-strong: var(--color-sand-300);
+  --color-input: #e7dbcc;
+  --color-ring: var(--color-champagne-500);
+
+  --color-destructive: #a3352c;
+  --color-destructive-foreground: #fdf6f4;
+  --color-destructive-soft: #f7e6e3;
+  --color-success: #3f6b4f;
+  --color-success-foreground: #f2f7f3;
+  --color-success-soft: #e8f0ea;
+
+  /* ---- Type ---- */
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-serif: var(--font-cormorant), ui-serif, Georgia, 'Times New Roman', serif;
+
+  --text-display-sm: 2rem;
+  --text-display-sm--line-height: 1.12;
+  --text-display-sm--letter-spacing: -0.015em;
+  --text-display: 2.75rem;
+  --text-display--line-height: 1.06;
+  --text-display--letter-spacing: -0.02em;
+  --text-display-lg: 4rem;
+  --text-display-lg--line-height: 1;
+  --text-display-lg--letter-spacing: -0.025em;
+
+  /* ---- Depth & motion ---- */
+  --radius-xs: 0.25rem;
+  --radius-sm: 0.375rem;
+  --radius: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+
+  --shadow-soft: 0 1px 2px rgb(43 33 28 / 0.04), 0 8px 24px -12px rgb(43 33 28 / 0.1);
+  --shadow-lift: 0 2px 4px rgb(43 33 28 / 0.05), 0 18px 40px -20px rgb(43 33 28 / 0.18);
+  --shadow-panel: 0 24px 60px -24px rgb(43 33 28 / 0.28);
+
+  --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@layer base {
+  *,
+  *::before,
+  *::after {
+    border-color: var(--color-border);
+  }
+
+  html {
+    scroll-behavior: smooth;
+    /* Keeps anchored sections clear of the sticky header. */
+    scroll-padding-top: 6rem;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    font-feature-settings: 'cv11', 'ss01';
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    font-family: var(--font-serif);
+    font-weight: 300;
+    text-wrap: balance;
+  }
+
+  p {
+    text-wrap: pretty;
+  }
+
+  ::selection {
+    background-color: var(--color-champagne-300);
+    color: var(--color-ink);
+  }
+
+  /* One consistent focus treatment across links, buttons and inputs. */
+  :focus-visible {
+    outline: 2px solid var(--color-ring);
+    outline-offset: 2px;
+    border-radius: var(--radius-xs);
+  }
+
+  /* Hide the number spinners on quantity/price inputs. */
+  input[type='number']::-webkit-outer-spin-button,
+  input[type='number']::-webkit-inner-spin-button {
+    appearance: none;
+    margin: 0;
+  }
+  input[type='number'] {
+    -moz-appearance: textfield;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+/*
+ * Page shell. Mobile-first gutters that stay comfortable at 320px and open up on
+ * larger viewports without the content ever exceeding a readable measure.
+ */
+@utility container-page {
+  width: 100%;
+  margin-inline: auto;
+  max-width: 90rem;
+  padding-inline: 1rem;
+
+  @media (width >= 40rem) {
+    padding-inline: 1.5rem;
+  }
+  @media (width >= 64rem) {
+    padding-inline: 2.5rem;
+  }
+  @media (width >= 90rem) {
+    padding-inline: 4rem;
+  }
+}
+
+/** Editorial small-caps label used above section headings. */
+@utility eyebrow {
+  font-family: var(--font-sans);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--color-champagne-500);
+}
+
+/** Accessible skip-link that only becomes visible on keyboard focus. */
+@utility skip-link {
+  position: absolute;
+  left: 1rem;
+  top: -4rem;
+  z-index: 100;
+  border-radius: var(--radius);
+  background-color: var(--color-primary);
+  color: var(--color-primary-foreground);
+  padding: 0.75rem 1.25rem;
+  font-size: 0.875rem;
+  transition: top 200ms var(--ease-out-soft);
+
+  &:focus {
+    top: 1rem;
+  }
+}
+
+/** Loading shimmer for skeleton blocks. */
+@utility shimmer {
+  position: relative;
+  overflow: hidden;
+
+  &::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background-image: linear-gradient(
+      90deg,
+      transparent 0%,
+      rgb(255 255 255 / 0.55) 50%,
+      transparent 100%
+    );
+    animation: shimmer-sweep 1.8s infinite;
+  }
+}
+
+@keyframes shimmer-sweep {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+/** Subtle card raise, used on product and category tiles. */
+@utility lift {
+  transition:
+    transform 400ms var(--ease-out-soft),
+    box-shadow 400ms var(--ease-out-soft);
+
+  @media (hover: hover) {
+    &:hover {
+      transform: translateY(-2px);
+      box-shadow: var(--shadow-lift);
+    }
+  }
+}
