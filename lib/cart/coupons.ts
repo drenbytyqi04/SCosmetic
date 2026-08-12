@@ -1,6 +1,8 @@
 import 'server-only';
 
 import { store } from '@/lib/db/store';
+import { isPrismaDataSource } from '@/lib/products/repository';
+import { prismaCouponRepository } from '@/lib/cart/prisma-coupons';
 import type { Coupon } from '@/types';
 
 /**
@@ -25,7 +27,7 @@ export const memoryCouponRepository: CouponRepository = {
 };
 
 export function getCouponRepository(): CouponRepository {
-  return memoryCouponRepository;
+  return isPrismaDataSource() ? prismaCouponRepository : memoryCouponRepository;
 }
 
 export function normaliseCouponCode(code: string): string {

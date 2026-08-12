@@ -1,211 +1,194 @@
-# Connecting a database
+# Database
 
-The application is built to run against Postgres. Today it serves a seed catalogue from
-memory, but nothing in `app/` or `components/` knows that — every read goes through a
-repository interface, so switching is a change to a handful of modules in `lib/`.
+The application runs on Postgres. The Prisma implementation is **built and verified** —
+you set two environment variables, run one migration and one seed, and every read and
+write goes to the database.
 
-## The seam
+Without `DATA_SOURCE=prisma` it falls back to an in-memory seed catalogue, which is
+useful for a local look around but loses every write on restart.
 
-```
-app/(storefront)/shop/page.tsx
-        │
-        ├─ lib/products/queries.ts        cached read API (React `cache`)
-        │       │
-        │       └─ getProductRepository()  factory — reads DATA_SOURCE
-        │               │
-        │               ├─ memoryProductRepository   ← today
-        │               └─ prismaProductRepository    ← you write this
-        │
-        └─ types/index.ts                 shared domain types
-```
+## Set it up
 
-Three factories to satisfy:
+### 1. Get a Postgres database
 
-| Factory | File | Interfaces |
-| --- | --- | --- |
-| `getProductRepository()` | `lib/products/repository.ts` | `ProductRepository` |
-| `getCategoryRepository()` | `lib/products/repository.ts` | `CategoryRepository` |
-| `getOrderRepository()` | `lib/orders/repository.ts` | `OrderRepository` |
-| `getNewsletterRepository()` | `lib/marketing/repository.ts` | `NewsletterRepository` |
-| `getContactRepository()` | `lib/marketing/repository.ts` | `ContactRepository` |
-| `getCustomerRepository()` | `lib/marketing/repository.ts` | `CustomerRepository` |
-| `getCouponRepository()` | `lib/cart/coupons.ts` | `CouponRepository` |
+Any Postgres works. Supabase, Neon and Vercel Postgres all give you two connection
+strings, and you want both:
 
-Each is a plain async interface. There are no Prisma types in the signatures, so the
-implementation is free to shape its queries however it likes as long as it returns the
-domain types.
+| Variable       | Which string          | Used by                        |
+| -------------- | --------------------- | ------------------------------ |
+| `DATABASE_URL` | **pooled**            | the app, at runtime            |
+| `DIRECT_URL`   | **direct / unpooled** | the Prisma CLI, for migrations |
 
-## Steps
-
-### 1. Install Prisma
+The distinction matters: pooled endpoints (Supabase's pgBouncer, Neon's pooled host)
+cannot run DDL, so migrations must use the direct string. On a plain local Postgres the
+two are the same and you can leave `DIRECT_URL` empty.
 
 ```bash
-npm install prisma --save-dev
-npm install @prisma/client
-```
-
-### 2. Point it at a database
-
-Set both URLs in `.env.local` (Supabase and Neon both give you these two). The pooled
-connection cannot run migrations, which is what `DIRECT_URL` is for:
-
-```bash
+# .env.local
+DATA_SOURCE="prisma"
 DATABASE_URL="postgresql://…?pgbouncer=true&connection_limit=1"
 DIRECT_URL="postgresql://…"
 ```
 
-### 3. Migrate
-
-`prisma/schema.prisma` is already written against the types in `types/index.ts`.
+### 2. Migrate and seed
 
 ```bash
-npx prisma migrate dev --name init
-npx prisma generate
+npm run db:deploy     # applies prisma/migrations — what a deployment runs
+npm run db:seed       # 7 categories, 26 products, 37 shades, 5 coupons
 ```
 
-Worth knowing about the schema before you extend it:
+`db:seed` is idempotent: every write is an upsert on a natural key (`slug`, `code`), so
+re-running updates rather than duplicating. Safe on every deploy.
 
-- **Money is `Int`, in cents.** Matching `type Cents = number`. Never `Float`.
-- **Order lines denormalise the product.** `slug`, `name`, `shadeName`, `unitPrice` and
-  `image` are copied onto `OrderLine`, and the address is copied onto `Order`. An order
-  is a historical record: it must still read correctly after a product is renamed,
-  repriced or deleted, and it must not change when a customer edits their address later.
-  `OrderLine.productId` is `onDelete: SetNull` for the same reason.
-- **Order totals are stored, not recomputed.** Prices and VAT rates change; what was
-  charged does not.
-- **Shades have a stable `key`.** Cart line items are `productId:shadeKey`, so the key
-  has to survive a rename of the shade's display name.
-- **Indexes** cover the queries the storefront actually runs: category listings, the
-  three merchandising flags, price sort and `createdAt`.
-
-### 4. Add a client singleton
-
-```ts
-// lib/db/prisma.ts
-import { PrismaClient } from '@prisma/client';
-
-const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
-
-export const prisma =
-  globalForPrisma.prisma ??
-  new PrismaClient({ log: process.env.NODE_ENV === 'development' ? ['warn', 'error'] : ['error'] });
-
-if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma;
-```
-
-The singleton matters in development: without it, hot reload opens a new connection pool
-on every rebuild until Postgres refuses new connections.
-
-### 5. Implement one repository at a time
-
-Start with `ProductRepository` — it is the largest and the one every page depends on.
-
-```ts
-// lib/products/prisma-repository.ts
-import 'server-only';
-import { prisma } from '@/lib/db/prisma';
-import type { ProductRepository } from '@/lib/products/repository';
-
-export const prismaProductRepository: ProductRepository = {
-  async findBySlug(slug) {
-    const row = await prisma.product.findUnique({
-      where: { slug },
-      include: { shades: { orderBy: { position: 'asc' } } },
-    });
-    return row ? toProduct(row) : null;
-  },
-  // …
-};
-```
-
-Then return it from the factory:
-
-```ts
-export function getProductRepository(): ProductRepository {
-  if (process.env.DATA_SOURCE === 'prisma') return prismaProductRepository;
-  return memoryProductRepository;
-}
-```
-
-The factories currently **throw** when `DATA_SOURCE=prisma` and no implementation
-exists. Keep that behaviour until each one is genuinely done: a loud failure is far
-better than a production deployment quietly serving seed data while believing it is
-talking to Postgres.
-
-Notes on the trickier methods:
-
-- **`list()`** — port the pure helpers in `lib/products/repository.ts` (`applyFilters`,
-  `applySort`, `paginate`) to `where` / `orderBy` / `skip` / `take`. Two behaviours are
-  easy to lose: the effective price is `COALESCE(salePrice, price)`, and out-of-stock
-  products sink to the bottom of *every* ordering.
-- **`search()`** — the in-memory version requires every whitespace-separated token to
-  appear somewhere, then ranks by where it matched. Postgres full-text search
-  (`to_tsvector`) or `pg_trgm` will both do better; keep the ranking so exact name
-  matches stay first.
-- **`facets()`** — one `groupBy` for brands, one for categories, one `aggregate` for the
-  price range. Do not fetch every product to count them.
-- **`adjustStock()`** — must be a single atomic statement, not read-then-write:
-  `UPDATE … SET stock = GREATEST(0, stock - $1)`. Two concurrent orders for the last
-  unit is exactly the case this exists to survive.
-
-### 6. Orders need a transaction
-
-Order creation currently runs sequentially. Against a real database it should be one
-transaction covering the order row, its lines and the stock decrement, so a failure
-half-way cannot leave stock reserved for an order that does not exist:
-
-```ts
-await prisma.$transaction(async (tx) => {
-  const order = await tx.order.create({ data: { /* … */ lines: { create: lines } } });
-  for (const line of lines) {
-    await tx.product.update({
-      where: { id: line.productId },
-      data: { stock: { decrement: line.quantity } },
-    });
-  }
-  return order;
-});
-```
-
-Add a `stock >= quantity` guard (or a check constraint) so an oversell fails the
-transaction rather than driving stock negative.
-
-### 7. Seed
-
-`lib/products/data/products.ts` and `categories.ts` are the seed content. A
-`prisma/seed.ts` that imports and inserts them keeps one source of truth:
-
-```ts
-import { products } from '../lib/products/data/products';
-import { categories } from '../lib/products/data/categories';
-```
-
-### 8. Flip the switch
+Sample orders, customers, subscribers and contact messages are **off by default** — a
+real store should not open with invented orders in its dashboard. Add them when you want
+a populated admin to look at:
 
 ```bash
-DATA_SOURCE="prisma"
+SEED_DEMO_DATA=1 npm run db:seed
 ```
 
-Then delete `lib/db/store.ts`, and the `memory*` repositories with it.
+### 3. Verify
+
+```bash
+npm run verify        # typecheck, lint, production build
+npm run db:studio     # browse the data
+```
+
+## Deploying on Vercel
+
+1. Add `DATA_SOURCE`, `DATABASE_URL` and `DIRECT_URL` under **Settings → Environment
+   Variables** (plus the admin variables from `.env.example`).
+2. Redeploy. Environment variables are read at build and run time, so adding them does
+   not affect the existing deployment.
+3. Run the migration once against production. Either locally with production's
+   `DIRECT_URL` exported, or by adding `prisma migrate deploy` to the Vercel build
+   command.
+
+`prisma generate` runs automatically — it is wired into both `postinstall` and `build`,
+because the generated client is not committed. It does not need a database connection, so
+a deployment with no Postgres at all still builds.
+
+## Architecture
+
+Nothing in `app/` or `components/` knows which data source is active:
+
+```
+app/(storefront)/shop/page.tsx
+        │
+        ├─ lib/products/queries.ts          cached reads (React `cache`)
+        │       │
+        │       └─ getProductRepository()   ← reads DATA_SOURCE
+        │               ├─ prismaProductRepository   (Postgres)
+        │               └─ memoryProductRepository   (seed store)
+        │
+        └─ types/index.ts                   domain types, shared by both
+```
+
+| Factory                     | Postgres implementation              |
+| --------------------------- | ------------------------------------ |
+| `getProductRepository()`    | `lib/products/prisma-repository.ts`  |
+| `getCategoryRepository()`   | `lib/products/prisma-repository.ts`  |
+| `getOrderRepository()`      | `lib/orders/prisma-repository.ts`    |
+| `getNewsletterRepository()` | `lib/marketing/prisma-repository.ts` |
+| `getContactRepository()`    | `lib/marketing/prisma-repository.ts` |
+| `getCustomerRepository()`   | `lib/marketing/prisma-repository.ts` |
+| `getCouponRepository()`     | `lib/cart/prisma-coupons.ts`         |
+
+Both implementations are exercised by the same checks, and the search matching and
+ranking are literally shared (`lib/products/search.ts`) so results cannot drift between
+them.
+
+The Prisma client (`lib/db/prisma.ts`) is created on **first query**, not at import. That
+is what lets the repository modules be imported unconditionally: a deployment on the seed
+store never opens a pool or demands a `DATABASE_URL`.
+
+## Decisions worth knowing before you change the schema
+
+**Money is `Int`, in cents.** Matching `type Cents = number` in the domain types. Never
+`Float`.
+
+**Orders denormalise the product.** `slug`, `name`, `shadeName`, `unitPrice` and `image`
+are copied onto `OrderLine`, and the address onto `Order`. An order is a historical
+record: it must still read correctly after a product is renamed, repriced or deleted, and
+it must not change when a customer later edits their address. `OrderLine.productId` is
+`onDelete: SetNull` for the same reason.
+
+**Order totals are stored, not recomputed.** Prices and VAT rates change; what was
+charged does not.
+
+**Shades have a stable `key`.** Cart line items are `productId:shadeKey`, so the key must
+survive a rename of the shade's display name.
+
+**`effectivePrice` and `inStock` are derived columns maintained by a trigger.**
+
+Two orderings the storefront depends on cannot be expressed through Prisma's `orderBy`:
+the sale-aware price (`COALESCE(salePrice, price)`) and sold-out products sinking to the
+bottom of every listing. Both are stored as indexed columns.
+
+They are maintained by a `BEFORE INSERT OR UPDATE` trigger
+(`prisma/migrations/*_product_derived_columns_trigger`), not by application code. That is
+a deliberate correction: they started out maintained by the repository, and the seed
+forgot to set them on its very first run — which silently degraded price sorting into a
+name sort and marked all 26 products out of stock. In the database, no writer can bypass
+it: repository, seed, data migration or a manual `UPDATE` in psql all get correct values.
+
+**Never set those two columns from application code.** The trigger overwrites them
+anyway, and code that appears to set them invites the reader to trust the wrong source.
+
+**Stock reservation is atomic and lives inside order creation.**
+`OrderRepository.create()` reserves stock, writes the order and its lines, and upserts the
+customer in one transaction. The reservation is a guarded statement:
+
+```sql
+UPDATE "Product" SET stock = stock - $qty
+WHERE id = $id AND stock >= $qty
+```
+
+If another transaction took the last unit first, zero rows are affected and the whole
+transaction aborts — `create()` returns `null` and the checkout endpoint turns that into
+"something in your bag sold out", rather than overselling. Verified by firing five
+concurrent orders at a product with one unit left: one order created, the rest refused,
+stock landed on exactly `0`.
+
+**Customer totals are aggregates, not counters.** `orderCount` and `totalSpent` are
+computed from the customer's orders, excluding cancelled and refunded ones, so they cannot
+drift away from the orders themselves.
+
+## Notes on specific queries
+
+- **`list()`** — filters and sorts in SQL with `skip`/`take`. A _search_ request is the
+  exception: it is ranked by where the term matched (an exact product name outranks a
+  mention in a description), which SQL cannot express in `orderBy`, so matching rows are
+  ranked in the application. Bounded by `take: 500` and by how few products match a
+  search. Swap that branch for `to_tsvector` or `pg_trgm` when the catalogue is large
+  enough to justify it — the ranking helper is shared, so behaviour stays identical.
+- **`facets()`** — two `groupBy`s and one `aggregate`, not a full table scan counted in
+  JavaScript.
+- **`stats()`** — the 14-day revenue trend is a `date_trunc` + `GROUP BY` in Postgres
+  rather than fetching every order and bucketing it.
+- **Enum columns need guarding.** `categorySlug` is a Postgres enum, and comparing it
+  against a value outside the enum throws. The search builder only adds that clause when
+  the token actually names a category — without the guard, searching for any ordinary word
+  failed the whole query. (Found by testing, not by reading.)
 
 ## Supabase instead of Prisma
 
-The same interfaces work with `@supabase/supabase-js`. Two things to get right:
+The same interfaces work with `@supabase/supabase-js` if you prefer it. Two things to get
+right:
 
-- The **service-role key is server-only**. It must never appear in a `NEXT_PUBLIC_*`
-  variable. Repositories are already `server-only`, which keeps it that way.
+- The **service-role key is server-only** and must never appear in a `NEXT_PUBLIC_*`
+  variable. The repositories are already `server-only`, which keeps it that way.
 - If you use the anon key with Row Level Security, write the policies before the
   application depends on them. Catalogue tables are public-read; orders, customers,
   subscribers and messages are not.
 
-## Checklist
+## Still to do
 
-- [ ] `prisma migrate dev` clean against an empty database
-- [ ] Every repository method implemented, including `facets` and `adjustStock`
-- [ ] Order creation wrapped in a transaction with an oversell guard
-- [ ] Client singleton in place
-- [ ] Seed script runs idempotently
-- [ ] `DATA_SOURCE=prisma`
-- [ ] `npm run verify` passes
-- [ ] Filtering, sorting, pagination and search spot-checked against real rows
-- [ ] `lib/db/store.ts` and the memory repositories deleted
+- **Stock release for abandoned orders.** Stock is reserved at order creation. Decide how
+  long an unpaid order holds it and release it on payment failure or expiry — see
+  PAYMENTS.md.
+- **Newsletter double opt-in.** `confirmToken` exists in the schema; nothing sends the
+  email yet.
+- **`AdminUser` is unused.** Admin credentials come from environment variables. The table
+  is there for when you want more than one administrator.

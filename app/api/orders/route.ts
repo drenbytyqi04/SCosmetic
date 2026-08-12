@@ -10,7 +10,6 @@ import { resolveCart } from '@/lib/cart/server';
 import { getOrderRepository } from '@/lib/orders/repository';
 import { getNewsletterRepository } from '@/lib/marketing/repository';
 import { getPaymentProvider } from '@/lib/payments/provider';
-import { getProductRepository } from '@/lib/products/repository';
 import { checkoutSchema } from '@/lib/validations/checkout';
 import type { OrderLine } from '@/types';
 
@@ -22,10 +21,10 @@ import type { OrderLine } from '@/types';
  *
  *   1. validate the submitted details
  *   2. re-price the cart from the catalogue (client prices are ignored entirely)
- *   3. create the order in a `pending` / `requires_payment` state
+ *   3. create the order in a `pending` / `requires_payment` state AND reserve stock,
+ *      as one atomic step — see OrderRepository.create
  *   4. create a payment intent through the provider
- *   5. decrement stock
- *   6. hand back where the customer goes next
+ *   5. hand back where the customer goes next
  *
  * The order is never marked paid here. That only happens on a confirmed payment
  * callback, which is why `markPaid` lives on the repository rather than being called
@@ -75,7 +74,7 @@ export async function POST(request: Request) {
       ...(item.shadeName ? { shadeName: item.shadeName } : {}),
     }));
 
-    // 3. Persist the order.
+    // 3. Persist the order and reserve stock together.
     const orders = getOrderRepository();
     const order = await orders.create({
       email: payload.email,
@@ -88,17 +87,26 @@ export async function POST(request: Request) {
       ...(payload.notes ? { notes: payload.notes } : {}),
     });
 
+    /*
+     * Null means stock ran out between step 2 and the commit — another customer took the
+     * last unit in the meantime. No order exists and nothing was reserved, so this is the
+     * same "review your bag" outcome as an adjustment, not an error.
+     */
+    if (!order) {
+      return apiSuccess({
+        reference: null,
+        redirectUrl: null,
+        adjustments: [
+          'Something in your bag sold out while you were checking out. Please review it and try again.',
+        ],
+      });
+    }
+
     // 4. Payment intent. The manual provider records intent to pay; a Stripe adapter
     //    would return a client secret here instead.
     const provider = getPaymentProvider();
     const intent = await provider.createIntent(order);
     if (intent.id) await orders.attachPaymentIntent(order.id, intent.id);
-
-    // 5. Reserve stock.
-    const products = getProductRepository();
-    for (const line of lines) {
-      await products.adjustStock(line.productId, -line.quantity);
-    }
 
     // Optional marketing opt-in, kept separate from the order itself.
     if (payload.subscribe) {

@@ -1,6 +1,12 @@
 import 'server-only';
 
 import { createId, store } from '@/lib/db/store';
+import { isPrismaDataSource } from '@/lib/products/repository';
+import {
+  prismaContactRepository,
+  prismaCustomerRepository,
+  prismaNewsletterRepository,
+} from '@/lib/marketing/prisma-repository';
 import type { ContactMessage, Customer, NewsletterSubscriber } from '@/types';
 
 /** Newsletter list, contact inbox and the customer aggregate. */
@@ -104,13 +110,13 @@ export const memoryCustomerRepository: CustomerRepository = {
 };
 
 export function getNewsletterRepository(): NewsletterRepository {
-  return memoryNewsletterRepository;
+  return isPrismaDataSource() ? prismaNewsletterRepository : memoryNewsletterRepository;
 }
 
 export function getContactRepository(): ContactRepository {
-  return memoryContactRepository;
+  return isPrismaDataSource() ? prismaContactRepository : memoryContactRepository;
 }
 
 export function getCustomerRepository(): CustomerRepository {
-  return memoryCustomerRepository;
+  return isPrismaDataSource() ? prismaCustomerRepository : memoryCustomerRepository;
 }

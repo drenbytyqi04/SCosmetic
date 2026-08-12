@@ -1,6 +1,8 @@
 import 'server-only';
 
 import { createId, createOrderReference, store } from '@/lib/db/store';
+import { isPrismaDataSource } from '@/lib/products/repository';
+import { prismaOrderRepository } from '@/lib/orders/prisma-repository';
 import type { Address, CartTotals, Order, OrderLine, OrderStatus, ShippingMethod } from '@/types';
 
 /**
@@ -29,7 +31,16 @@ export interface OrderListFilter {
 }
 
 export interface OrderRepository {
-  create(input: NewOrderInput): Promise<Order>;
+  /**
+   * Creates the order, its lines and the stock reservation as one unit.
+   *
+   * Stock is reserved here rather than by the caller so a real database can do all of
+   * it in a single transaction: a failure half-way must not leave stock reserved for an
+   * order that does not exist, and two concurrent orders for the last unit must not both
+   * succeed. Returns null when stock ran out between pricing and commit — the caller
+   * turns that into a "your bag changed" response rather than an oversell.
+   */
+  create(input: NewOrderInput): Promise<Order | null>;
   findById(id: string): Promise<Order | null>;
   findByReference(reference: string): Promise<Order | null>;
   list(filter?: OrderListFilter): Promise<Order[]>;
@@ -53,6 +64,25 @@ const clone = <T>(value: T): T => structuredClone(value);
 
 export const memoryOrderRepository: OrderRepository = {
   async create(input) {
+    /*
+     * Reserve stock first, then write the order — mirroring what the Postgres
+     * implementation does inside a transaction. JavaScript runs this without
+     * interleaving, so checking every line before decrementing any is enough here to
+     * avoid a partial reservation.
+     */
+    const reservations = input.lines.map((line) => ({
+      product: store.products.find((candidate) => candidate.id === line.productId),
+      quantity: line.quantity,
+    }));
+
+    for (const reservation of reservations) {
+      if (!reservation.product || reservation.product.stock < reservation.quantity) return null;
+    }
+    for (const reservation of reservations) {
+      reservation.product!.stock -= reservation.quantity;
+      reservation.product!.updatedAt = new Date().toISOString();
+    }
+
     const now = new Date().toISOString();
     const order: Order = {
       id: createId('ord'),
@@ -189,5 +219,5 @@ function upsertCustomer(order: Order): void {
 }
 
 export function getOrderRepository(): OrderRepository {
-  return memoryOrderRepository;
+  return isPrismaDataSource() ? prismaOrderRepository : memoryOrderRepository;
 }

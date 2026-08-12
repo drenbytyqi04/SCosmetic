@@ -4,8 +4,8 @@ A production-shaped e-commerce storefront for a prestige beauty retailer in Pris
 built with Next.js 16 (App Router), React 19, TypeScript and Tailwind CSS v4.
 
 Not a prototype: server-rendered catalogue with URL-driven filtering, a persisted cart,
-server-side pricing, an authenticated admin area, and a data layer behind interfaces so
-the in-memory seed store can be swapped for Postgres without touching the UI.
+server-side pricing, an authenticated admin area, and a Postgres data layer behind
+repository interfaces — with an in-memory seed store as the zero-setup fallback.
 
 ## Quick start
 
@@ -14,6 +14,19 @@ npm install
 cp .env.example .env.local     # optional for local development; required for admin
 npm run dev                    # http://localhost:3000
 ```
+
+Runs on the in-memory seed catalogue out of the box. To persist data, point it at Postgres
+— two variables, one migration, one seed:
+
+```bash
+# .env.local
+DATA_SOURCE="prisma"
+DATABASE_URL="postgresql://…"
+
+npm run db:deploy && npm run db:seed
+```
+
+See [DATABASE.md](./DATABASE.md).
 
 Verify everything the way CI would:
 
@@ -27,16 +40,16 @@ Individual steps: `npm run typecheck`, `npm run lint`, `npm run build`, `npm sta
 
 **Storefront**
 
-| Route | Rendering | Notes |
-| --- | --- | --- |
-| `/` | Static | Hero, category grid, three merchandised rails streamed with Suspense |
-| `/shop` | Dynamic | Search, category/brand/price/availability filters, sort, pagination |
-| `/products/[slug]` | SSG + ISR | Pre-rendered per product, revalidates hourly |
-| `/category/[slug]` | SSG shell + streamed grid | Category-scoped filtering |
-| `/categories` | Static | Category index with live product counts |
-| `/cart`, `/checkout`, `/checkout/success` | Dynamic | Bag, checkout, order confirmation |
-| `/wishlist` | Dynamic | Device-local saves, resolved against the live catalogue |
-| `/about`, `/contact` | Static | Contact form, FAQ with FAQ structured data |
+| Route                                     | Rendering                 | Notes                                                                |
+| ----------------------------------------- | ------------------------- | -------------------------------------------------------------------- |
+| `/`                                       | Static                    | Hero, category grid, three merchandised rails streamed with Suspense |
+| `/shop`                                   | Dynamic                   | Search, category/brand/price/availability filters, sort, pagination  |
+| `/products/[slug]`                        | SSG + ISR                 | Pre-rendered per product, revalidates hourly                         |
+| `/category/[slug]`                        | SSG shell + streamed grid | Category-scoped filtering                                            |
+| `/categories`                             | Static                    | Category index with live product counts                              |
+| `/cart`, `/checkout`, `/checkout/success` | Dynamic                   | Bag, checkout, order confirmation                                    |
+| `/wishlist`                               | Dynamic                   | Device-local saves, resolved against the live catalogue              |
+| `/about`, `/contact`                      | Static                    | Contact form, FAQ with FAQ structured data                           |
 
 **Admin** (`/admin`, session-gated)
 
@@ -76,24 +89,37 @@ lib/
   seo/                   Metadata builders, JSON-LD generators
   api/                   Response envelope, rate limiter
   utils/                 cn, formatting, sanitisation, image helpers
-  db/store.ts            The seed store — the only thing Postgres replaces
+  db/                    Prisma client (lazy), id helpers, in-memory seed store
 types/index.ts           Domain types shared by every layer
-prisma/schema.prisma     Target schema, written against those same types
+prisma/
+  schema.prisma          Postgres schema, written against those same types
+  migrations/            Including the trigger that maintains derived columns
+  seed.mts               Idempotent seed, sharing the catalogue seed data
 ```
 
 ### Data layer
 
-Nothing in `app/` or `components/` reads seed data directly. Pages call cached query
+Nothing in `app/` or `components/` reads a data source directly. Pages call cached query
 functions, which call repositories, which are obtained from factories:
 
 ```
-page.tsx → lib/products/queries.ts → getProductRepository() → memory | prisma
+page.tsx → lib/products/queries.ts → getProductRepository() → prisma | memory
 ```
 
-`DATA_SOURCE=prisma` is the seam. Until the Prisma repositories exist, setting it throws
-with a pointer to the work — failing loudly beats a production deployment quietly
-serving seed data while believing it is talking to Postgres. See
-[DATABASE.md](./DATABASE.md).
+`DATA_SOURCE` picks the implementation. Both satisfy the same interfaces and return the
+same domain types, and search matching and ranking are literally shared
+(`lib/products/search.ts`) so results cannot drift between them.
+
+Postgres specifics — the derived columns maintained by a trigger, the atomic stock
+reservation, why order lines are denormalised — are in [DATABASE.md](./DATABASE.md). Two
+worth knowing here:
+
+- **Stock reservation is part of order creation**, not a separate step. One transaction
+  covers the order, its lines, the customer aggregate and a guarded
+  `UPDATE … WHERE stock >= quantity`. Verified against five concurrent orders for a single
+  remaining unit: one succeeded, the rest were refused, stock landed on exactly zero.
+- **The Prisma client is created on first query**, not at import, so a deployment running
+  on the seed store never opens a connection pool or needs a `DATABASE_URL`.
 
 ### Money
 
@@ -123,7 +149,7 @@ Instagram — keeps the bag. Two things to know if you extend them:
   so a selector that builds a fresh object loops forever. Derived values live in hooks
   (`useCartTotals`, `useCartSavings`, `useCartLineInputs`) that subscribe to raw slices
   and compute with `useMemo`.
-- Persisted state rehydrates *during* `create()`, before the store binding exists.
+- Persisted state rehydrates _during_ `create()`, before the store binding exists.
   `onRehydrateStorage` therefore goes through the state it is handed
   (`state?.markHydrated()`), never through the exported hook.
 
@@ -138,7 +164,7 @@ agree.
 - **Client schemas are for UX only.** `lib/validations/forms.ts` mirrors the server
   rules for inline feedback; the server schema is always the authority.
 - **Admin auth.** HS256 JWT in an httpOnly, SameSite=Lax, Secure cookie. Middleware
-  gates `/admin/*`; every admin server action *also* calls `requireAdmin()`, because a
+  gates `/admin/*`; every admin server action _also_ calls `requireAdmin()`, because a
   server action is an endpoint in its own right. Passwords are scrypt (Node stdlib, no
   native dependency), compared in constant time, with a generic failure message.
 - **Production refuses to guess.** Without `ADMIN_EMAIL` + `ADMIN_PASSWORD_HASH` no
@@ -228,9 +254,10 @@ would be silently expanded away.
 
 Stated plainly rather than left to be discovered:
 
-- **Writes are in-process.** The seed store lives in memory, so admin edits survive
-  navigation within one server instance but not a restart, and do not propagate across
-  instances. This is exactly what the repository interfaces exist to fix.
+- **Writes are in-process on the default data source.** The seed store lives in memory,
+  so admin edits survive navigation within one server instance but not a restart, and do
+  not propagate across instances. Set `DATA_SOURCE=prisma` for anything real — that is
+  what the repository interfaces exist for.
 - **No customer accounts.** Wishlist is device-local; "customers" are derived from
   order history.
 - **No email is sent.** Contact messages and newsletter sign-ups are stored for the

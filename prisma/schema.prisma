@@ -17,15 +17,15 @@
 //
 // See DATABASE.md for the full walkthrough.
 
+// Prisma 7: the client is generated into the repo rather than into node_modules,
+// and connection URLs live in prisma.config.ts instead of here.
 generator client {
-  provider = "prisma-client-js"
+  provider = "prisma-client"
+  output   = "../lib/db/generated"
 }
 
 datasource db {
-  provider  = "postgresql"
-  url       = env("DATABASE_URL")
-  // Pooled connections cannot run migrations; DIRECT_URL bypasses the pooler.
-  directUrl = env("DIRECT_URL")
+  provider = "postgresql"
 }
 
 enum CategorySlug {
@@ -100,6 +100,14 @@ model Product {
   price     Int
   salePrice Int?
 
+  /// COALESCE(salePrice, price) — the price actually charged.
+  ///
+  /// Stored rather than computed per query because ordering by an expression is not
+  /// expressible through Prisma's `orderBy`, and the shop sorts by price on every
+  /// request. Maintained by a BEFORE INSERT/UPDATE trigger, so it cannot be left stale
+  /// by any writer — never set it from application code. Indexed.
+  effectivePrice Int @default(0)
+
   images      String[]
   ingredients String[]
   benefits    String[]
@@ -108,6 +116,11 @@ model Product {
   reviewCount Int?    @default(0)
 
   stock Int    @default(0)
+  /// `stock > 0`. Maintained by the same trigger as `effectivePrice`.
+  ///
+  /// Exists for the same reason: sold-out products sink to the bottom of every
+  /// ordering, and `ORDER BY (stock > 0) DESC` is not expressible through `orderBy`.
+  inStock Boolean @default(false)
   size  String?
 
   featured   Boolean @default(false)
@@ -128,7 +141,8 @@ model Product {
   @@index([featured])
   @@index([bestseller])
   @@index([newArrival])
-  @@index([price])
+  @@index([effectivePrice])
+  @@index([inStock])
   @@index([createdAt])
 }
 

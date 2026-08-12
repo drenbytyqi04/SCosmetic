@@ -3,6 +3,11 @@ import 'server-only';
 import { createId, store } from '@/lib/db/store';
 import { categories as seedCategories } from '@/lib/products/data/categories';
 import { commerceConfig } from '@/lib/config/site';
+import { matchesSearch, rankSearchResults } from '@/lib/products/search';
+import {
+  prismaCategoryRepository,
+  prismaProductRepository,
+} from '@/lib/products/prisma-repository';
 import type {
   Category,
   CategorySlug,
@@ -53,40 +58,6 @@ export function effectivePrice(product: Product): number {
  * can be ported to SQL predicates one at a time.
  * ------------------------------------------------------------------ */
 
-function matchesSearch(product: Product, term: string): boolean {
-  const haystack = [
-    product.name,
-    product.brand,
-    product.category,
-    product.tagline,
-    product.description,
-    ...(product.shades?.map((shade) => shade.name) ?? []),
-    ...(product.ingredients ?? []),
-  ]
-    .join(' ')
-    .toLowerCase();
-
-  // Every whitespace-separated token must appear somewhere — narrow beats fuzzy
-  // for a catalogue this size, and it keeps results predictable.
-  return term
-    .toLowerCase()
-    .split(/\s+/)
-    .filter(Boolean)
-    .every((token) => haystack.includes(token));
-}
-
-/** Ranks a product against a search term so the best match sorts first. */
-function searchScore(product: Product, term: string): number {
-  const needle = term.toLowerCase().trim();
-  const name = product.name.toLowerCase();
-  if (name === needle) return 100;
-  if (name.startsWith(needle)) return 80;
-  if (name.includes(needle)) return 60;
-  if (product.brand.toLowerCase().includes(needle)) return 40;
-  if (product.tagline.toLowerCase().includes(needle)) return 25;
-  return 10;
-}
-
 function applyFilters(items: Product[], query: ProductQuery): Product[] {
   const { q, categories, brands, minPrice, maxPrice, onSale, inStock, tags } = query;
 
@@ -113,16 +84,23 @@ function applySort(items: Product[], query: ProductQuery): Product[] {
 
   switch (sort) {
     case 'price-asc':
-      sorted.sort((a, b) => effectivePrice(a) - effectivePrice(b));
+      sorted.sort(
+        (a, b) => effectivePrice(a) - effectivePrice(b) || a.name.localeCompare(b.name),
+      );
       break;
     case 'price-desc':
-      sorted.sort((a, b) => effectivePrice(b) - effectivePrice(a));
+      sorted.sort(
+        (a, b) => effectivePrice(b) - effectivePrice(a) || a.name.localeCompare(b.name),
+      );
       break;
     case 'newest':
-      sorted.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+      sorted.sort(
+        (a, b) =>
+          Date.parse(b.createdAt) - Date.parse(a.createdAt) || a.name.localeCompare(b.name),
+      );
       break;
     case 'rating':
-      sorted.sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0));
+      sorted.sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0) || a.name.localeCompare(b.name));
       break;
     case 'name-asc':
       sorted.sort((a, b) => a.name.localeCompare(b.name));
@@ -130,8 +108,7 @@ function applySort(items: Product[], query: ProductQuery): Product[] {
     case 'featured':
     default:
       if (query.q?.trim()) {
-        const term = query.q;
-        sorted.sort((a, b) => searchScore(b, term) - searchScore(a, term));
+        return rankSearchResults(sorted, query.q);
       } else {
         // Merchandised default: featured first, then bestsellers, then rating.
         const weight = (product: Product) =>
@@ -139,7 +116,10 @@ function applySort(items: Product[], query: ProductQuery): Product[] {
           (product.bestseller ? 2 : 0) +
           (product.newArrival ? 1 : 0);
         sorted.sort(
-          (a, b) => weight(b) - weight(a) || (b.rating ?? 0) - (a.rating ?? 0),
+          (a, b) =>
+            weight(b) - weight(a) ||
+            (b.rating ?? 0) - (a.rating ?? 0) ||
+            a.name.localeCompare(b.name),
         );
       }
       break;
@@ -199,10 +179,10 @@ export const memoryProductRepository: ProductRepository = {
 
   async search(term, limit = 8) {
     if (!term.trim()) return [];
-    const matches = store.products
-      .filter((product) => matchesSearch(product, term))
-      .sort((a, b) => searchScore(b, term) - searchScore(a, term))
-      .slice(0, limit);
+    const matches = rankSearchResults(
+      store.products.filter((product) => matchesSearch(product, term)),
+      term,
+    ).slice(0, limit);
     return clone(matches);
   },
 
@@ -337,30 +317,23 @@ export const memoryCategoryRepository: CategoryRepository = {
 };
 
 /**
- * Repository factory.
+ * Repository factories.
  *
- * `DATA_SOURCE=prisma` is the seam for a real database: implement
- * `prismaProductRepository` against `prisma/schema.prisma` and return it here.
- * Failing loudly beats silently serving seed data from a production deployment
- * that believes it is talking to Postgres.
+ * `DATA_SOURCE=prisma` selects Postgres; anything else serves the in-memory seed
+ * catalogue.
+ *
+ * Importing the Prisma module is safe even when it is not selected: the client in
+ * `lib/db/prisma.ts` is created on first query, so an unused Postgres path never opens a
+ * connection pool or demands a DATABASE_URL.
  */
+export function isPrismaDataSource(): boolean {
+  return process.env.DATA_SOURCE === 'prisma';
+}
+
 export function getProductRepository(): ProductRepository {
-  if (process.env.DATA_SOURCE === 'prisma') {
-    throw new Error(
-      'DATA_SOURCE=prisma is set but no Prisma repository is implemented yet. ' +
-        'See prisma/schema.prisma and DATABASE.md, then return the Prisma implementation ' +
-        'from getProductRepository() in lib/products/repository.ts.',
-    );
-  }
-  return memoryProductRepository;
+  return isPrismaDataSource() ? prismaProductRepository : memoryProductRepository;
 }
 
 export function getCategoryRepository(): CategoryRepository {
-  if (process.env.DATA_SOURCE === 'prisma') {
-    throw new Error(
-      'DATA_SOURCE=prisma is set but no Prisma category repository is implemented yet. ' +
-        'See prisma/schema.prisma and DATABASE.md.',
-    );
-  }
-  return memoryCategoryRepository;
+  return isPrismaDataSource() ? prismaCategoryRepository : memoryCategoryRepository;
 }

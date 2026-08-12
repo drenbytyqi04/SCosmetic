@@ -40,3 +40,6 @@ yarn-error.log*
 
 # testing
 /coverage
+
+# prisma — the client is generated from the schema at build time, not committed
+/lib/db/generated

@@ -32,13 +32,13 @@ possible failure here.
 Kept separate on purpose, so a provider slots in without the checkout UI or the order
 code changing:
 
-| Step | Where it lives now |
-| --- | --- |
-| 1. Checkout UI | `components/checkout/checkout-form.tsx` |
-| 2. Order creation | `app/api/orders/route.ts` → `getOrderRepository().create()` |
-| 3. Payment creation | `provider.createIntent(order)` |
-| 4. Payment confirmation | a webhook you add → `orders.markPaid()` |
-| 5. Order status | `orders.updateStatus()`, surfaced in `/admin/orders` |
+| Step                    | Where it lives now                                          |
+| ----------------------- | ----------------------------------------------------------- |
+| 1. Checkout UI          | `components/checkout/checkout-form.tsx`                     |
+| 2. Order creation       | `app/api/orders/route.ts` → `getOrderRepository().create()` |
+| 3. Payment creation     | `provider.createIntent(order)`                              |
+| 4. Payment confirmation | a webhook you add → `orders.markPaid()`                     |
+| 5. Order status         | `orders.updateStatus()`, surfaced in `/admin/orders`        |
 
 Step 4 is the one that does not exist yet, and it is the only one that may mark an order
 paid.
